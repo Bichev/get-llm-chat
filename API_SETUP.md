@@ -5,7 +5,7 @@
 ### Option 1: Start API Server Only
 ```bash
 # In a new terminal (keep your current `npm run dev` running)
-vercel dev
+vercel dev --listen 3001
 ```
 
 ### Option 2: Start Both Servers
@@ -25,7 +25,7 @@ npm run dev:full
 ## How It Works
 
 1. **Frontend**: `http://localhost:5173` (Vite dev server)
-2. **API**: `http://localhost:3000` (Vercel dev server)
+2. **API**: `http://localhost:3001` (Vercel dev server)
 3. **Magic**: API fetches ChatGPT → Frontend gets parsed data
 
 ## Test With Real URL
@@ -52,9 +52,9 @@ Your app will be live at `https://your-app.vercel.app` with full ChatGPT parsing
 ## Troubleshooting
 
 **Error: "API server not available"**
-- Make sure `vercel dev` is running on port 3000
+- Make sure `vercel dev --listen 3001` is running on port 3001
 - Check that both servers are running
 
 **Error: "Failed to fetch"**  
 - Try restarting the Vercel dev server
-- Ensure no other apps are using port 3000 
+- Ensure no other apps are using port 3001 

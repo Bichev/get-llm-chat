@@ -37,8 +37,8 @@ function App(): React.JSX.Element {
             `The parsing API is ready but needs to be started locally.\n\n` +
             `To test with REAL ChatGPT conversations:\n` +
             `1. Open a new terminal\n` +
-            `2. Run: vercel dev\n` +
-            `3. Wait for "Ready! Available at http://localhost:3000"\n` +
+            `2. Run: vercel dev --listen 3001\n` +
+            `3. Wait for "Ready! Available at http://localhost:3001"\n` +
             `4. Keep both servers running (this one + Vercel)\n` +
             `5. Try the export again!\n\n` +
             `For now, here's a demo export:`
