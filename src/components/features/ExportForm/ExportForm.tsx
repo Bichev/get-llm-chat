@@ -189,7 +189,7 @@ export const ExportForm: React.FC<ExportFormProps> = ({
               <div className="mt-2 text-sm text-green-700">
                 <p className="mb-2">
                   <strong>Ready for real ChatGPT conversations!</strong> Start local API server: 
-                  <code className="mx-1 px-2 py-1 bg-green-100 rounded text-green-800">vercel dev --listen 3001</code>
+                  <code className="mx-1 px-2 py-1 bg-green-100 rounded text-green-800">npm run dev:api</code>
                 </p>
                 <p className="text-xs">
                   ✅ CORS bypassed  ✅ Server-side parsing  ✅ Deploy to production instantly

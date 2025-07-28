@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "vercel dev --listen 3001",
+    "dev:api": "npx tsc api/parse-conversation.ts --outDir dist --target ES2020 --module ES6 --moduleResolution node --esModuleInterop --allowSyntheticDefaultImports && node server.js",
     "dev:full": "concurrently \"npm run dev\" \"npm run dev:api\"",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -18,7 +18,9 @@
     "@types/uuid": "^10.0.0",
     "@vercel/node": "^5.3.7",
     "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
     "date-fns": "^4.1.0",
+    "express": "^5.1.0",
     "jsdom": "^26.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

@@ -12,7 +12,7 @@ export class ApiService {
       // Determine API base URL
       const apiBaseUrl = process.env.NODE_ENV === 'production' 
         ? window.location.origin 
-        : 'http://localhost:3001'; // Vercel dev server
+        : 'http://localhost:3005'; // Local API server
 
       const response = await fetch(`${apiBaseUrl}/api/parse-conversation`, {
         method: 'POST',
@@ -56,7 +56,7 @@ export class ApiService {
     try {
       const apiBaseUrl = process.env.NODE_ENV === 'production' 
         ? window.location.origin 
-        : 'http://localhost:3001';
+        : 'http://localhost:3005';
 
       const response = await fetch(`${apiBaseUrl}/api/parse-conversation`, {
         method: 'OPTIONS',

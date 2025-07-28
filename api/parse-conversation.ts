@@ -194,7 +194,7 @@ function extractMessages($: cheerio.Root): Message[] {
     '.group',
   ];
 
-  let messageElements: cheerio.Cheerio<any> = $();
+  let messageElements: any = $('');
   
   for (const selector of messageSelectors) {
     messageElements = $(selector);
@@ -233,7 +233,7 @@ function extractMessages($: cheerio.Root): Message[] {
   return messages;
 }
 
-function extractMessageRole($element: cheerio.Cheerio<any>): 'user' | 'assistant' | 'system' {
+function extractMessageRole($element: any): 'user' | 'assistant' | 'system' {
   const roleAttr = $element.attr('data-message-author-role');
   
   if (roleAttr === 'user') return 'user';
@@ -251,7 +251,7 @@ function extractMessageRole($element: cheerio.Cheerio<any>): 'user' | 'assistant
   return 'assistant';
 }
 
-function extractMessageContent($element: cheerio.Cheerio<any>, $: cheerio.Root) {
+function extractMessageContent($element: any, $: cheerio.Root) {
   // Get the text content
   let text = $element.text().trim();
   
