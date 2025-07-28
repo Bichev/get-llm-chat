@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import * as cheerio from 'cheerio';
 import { v4 as uuidv4 } from 'uuid';
+import puppeteer from 'puppeteer';
 
 // Types
 interface Message {
@@ -63,6 +64,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'URL is required' });
   }
 
+  let html = '';
+
   try {
     console.log('Fetching conversation from:', url);
 
@@ -73,29 +76,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Fetch the HTML content with proper headers
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'no-cache',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
-    }
-
-    const html = await response.text();
-    console.log('HTML fetched, length:', html.length);
+    // Use Puppeteer for ChatGPT URLs to handle JavaScript rendering
+    html = await fetchWithPuppeteer(url);
+    console.log('HTML fetched with Puppeteer, length:', html.length);
 
     // Parse the conversation
     const conversation = parseConversationFromHtml(html, url);
@@ -110,10 +93,200 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (error) {
     console.error('Error parsing conversation:', error);
     
+    // Check if this looks like a JavaScript-rendered page
+    if (error instanceof Error && error.message.includes('No messages found')) {
+      return res.status(400).json({ 
+        error: 'Failed to extract conversation content. The page may be private, require authentication, or have a changed structure.',
+        suggestion: 'Please ensure the ChatGPT conversation is publicly shared and accessible.',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+    
     return res.status(500).json({ 
       error: `Failed to parse conversation: ${error instanceof Error ? error.message : 'Unknown error'}`,
       details: process.env.NODE_ENV === 'development' ? error : undefined
     });
+  }
+}
+
+/**
+ * Fetches a ChatGPT page using Puppeteer to handle JavaScript rendering
+ */
+async function fetchWithPuppeteer(url: string): Promise<string> {
+  let browser;
+  try {
+    console.log('Launching Puppeteer browser...');
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu'
+      ]
+    });
+
+    const page = await browser.newPage();
+    
+    // Set a realistic user agent and viewport
+    await page.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    console.log('Navigating to URL:', url);
+    
+    // Navigate to the page and wait for network to be idle
+    await page.goto(url, { 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
+
+    // Wait for conversation content to load
+    console.log('Waiting for conversation content to load...');
+    
+    // Try to wait for message elements to appear
+    try {
+      await page.waitForSelector('article[data-testid*="conversation-turn"], [data-message-author-role], .group.w-full', {
+        timeout: 15000
+      });
+      console.log('Found conversation elements');
+      
+      // Wait for the page to be fully loaded and stabilized
+      let previousMessageCount = 0;
+      let stableCount = 0;
+      const maxWaitTime = 20000; // 20 seconds max wait
+      const checkInterval = 2000; // Check every 2 seconds
+      
+      for (let i = 0; i < maxWaitTime / checkInterval; i++) {
+        // Count current messages
+        const currentMessages = await page.$$eval('article[data-testid*="conversation-turn"]', elements => elements.length);
+        console.log(`Message count check ${i + 1}: ${currentMessages} messages`);
+        
+        if (currentMessages === previousMessageCount) {
+          stableCount++;
+          if (stableCount >= 2) { // If count is stable for 2 consecutive checks
+            console.log('Message count stabilized, continuing...');
+            break;
+          }
+        } else {
+          stableCount = 0; // Reset stability counter
+          previousMessageCount = currentMessages;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
+      
+    } catch (selectorError) {
+      console.log('No conversation elements found immediately, continuing...');
+    }
+
+    // Additional wait to ensure dynamic content loads
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Scroll to bottom to ensure all messages are loaded (some sites lazy load)
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    
+    // Wait a bit more after scrolling
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Look for and click any "show more", "expand", or similar buttons
+    console.log('Looking for expandable content...');
+    try {
+      // Common selectors for expand/show more buttons in ChatGPT
+      const expandSelectors = [
+        'button[aria-expanded="false"]',
+        'button:contains("Show more")',
+        'button:contains("...")',
+        '[data-testid*="expand"]',
+        '.cursor-pointer:contains("...")',
+        'button.text-xs:contains("...")'
+      ];
+
+      for (const selector of expandSelectors) {
+        try {
+          const buttons = await page.$$(selector);
+          if (buttons.length > 0) {
+            console.log(`Found ${buttons.length} potential expand buttons with selector: ${selector}`);
+            
+            // Click all expand buttons
+            for (let i = 0; i < buttons.length; i++) {
+              try {
+                await buttons[i].click();
+                console.log(`Clicked expand button ${i + 1}`);
+                // Wait for content to expand
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              } catch (clickError) {
+                console.log(`Failed to click expand button ${i + 1}:`, clickError);
+              }
+            }
+          }
+        } catch (selectorError) {
+          // Selector not found, continue
+        }
+      }
+
+      // Also try clicking on any text that looks like "..." which might expand content
+      await page.evaluate(() => {
+        // Find elements containing "..." text that might be clickable
+        const elements = document.querySelectorAll('*');
+        elements.forEach(el => {
+          if (el.textContent && el.textContent.trim() === '...' && el.tagName !== 'SCRIPT') {
+            try {
+              (el as HTMLElement).click();
+            } catch (e) {
+              // Ignore click errors
+            }
+          }
+        });
+      });
+
+      // Wait for any expansions to complete
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+    } catch (expandError) {
+      console.log('Error while looking for expandable content:', expandError);
+    }
+
+    // Final scroll to ensure everything is visible
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Get the HTML content
+    const html = await page.content();
+    console.log('Page content extracted, length:', html.length);
+
+    // Save HTML for debugging (only in development)
+    if (process.env.NODE_ENV === 'development') {
+      try {
+        const fs = require('fs');
+        const path = require('path');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `debug-chatgpt-${timestamp}.html`;
+        const filepath = path.join(process.cwd(), filename);
+        fs.writeFileSync(filepath, html);
+        console.log(`Debug HTML saved to: ${filepath}`);
+      } catch (saveError) {
+        console.log('Failed to save debug HTML:', saveError);
+      }
+    }
+
+    return html;
+
+  } catch (error) {
+    console.error('Puppeteer error:', error);
+    throw new Error(`Failed to fetch page with Puppeteer: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  } finally {
+    if (browser) {
+      await browser.close();
+      console.log('Browser closed');
+    }
   }
 }
 
@@ -186,12 +359,13 @@ function extractTitle($: cheerio.Root): string {
 function extractMessages($: cheerio.Root): Message[] {
   const messages: Message[] = [];
   
-  // Look for conversation structure - try multiple selectors
+  // Look for conversation structure - updated selectors based on actual ChatGPT HTML
   const messageSelectors = [
-    '[data-message-author-role]',
-    '.conversation-turn',
-    '[role="presentation"]',
-    '.group',
+    'article[data-testid*="conversation-turn"]', // Primary selector for ChatGPT messages
+    '[data-message-author-role]',  // Fallback selector for messages with role
+    'div[data-testid*="conversation-turn"]', // Alternative test ID based
+    '.group.w-full',  // ChatGPT message containers (older structure)
+    '.group .flex.flex-col', // Message content containers (older structure)
   ];
 
   let messageElements: any = $('');
@@ -208,13 +382,20 @@ function extractMessages($: cheerio.Root): Message[] {
     try {
       const $element = $(element);
       
+      // For ChatGPT's article-based structure, look for the actual message div inside
+      let $messageDiv = $element.find('[data-message-author-role]');
+      if ($messageDiv.length === 0) {
+        // If we already selected the message div directly
+        $messageDiv = $element;
+      }
+      
       // Determine role
-      const role = extractMessageRole($element);
+      const role = extractMessageRole($messageDiv);
       
       // Extract content
-      const content = extractMessageContent($element, $);
+      const content = extractMessageContent($messageDiv, $);
       
-      if (content.text.trim()) {
+      if (content.text.trim() && content.text.length > 5 && content.text.length < 10000) {
         const timestamp = new Date().toISOString();
         
         messages.push({
@@ -240,11 +421,20 @@ function extractMessageRole($element: any): 'user' | 'assistant' | 'system' {
   if (roleAttr === 'assistant') return 'assistant';
   if (roleAttr === 'system') return 'system';
 
-  // Fallback logic
-  const elementText = $element.text().toLowerCase();
-  const elementHtml = $element.html()?.toLowerCase() || '';
+  // Fallback logic - look for role in parent or child elements
+  const $parent = $element.parent();
+  const parentRole = $parent.attr('data-message-author-role');
+  if (parentRole === 'user') return 'user';
+  if (parentRole === 'assistant') return 'assistant';
   
-  if (elementText.length < 50 && !elementHtml.includes('code')) {
+  const $child = $element.find('[data-message-author-role]').first();
+  const childRole = $child.attr('data-message-author-role');
+  if (childRole === 'user') return 'user';
+  if (childRole === 'assistant') return 'assistant';
+  
+  // Final fallback based on content length (simple heuristic)
+  const elementText = $element.text().toLowerCase();
+  if (elementText.length < 200 && !elementText.includes('code')) {
     return 'user';
   }
   
@@ -252,16 +442,53 @@ function extractMessageRole($element: any): 'user' | 'assistant' | 'system' {
 }
 
 function extractMessageContent($element: any, $: cheerio.Root) {
+  // Look for the actual content in ChatGPT's structure
+  const contentSelectors = [
+    '.whitespace-pre-wrap',  // Primary content selector for ChatGPT
+    '.markdown',
+    '.prose',
+    '.message-content',
+    '[data-message-content]',
+  ];
+
+  let contentElement = $element;
+  for (const selector of contentSelectors) {
+    const found = $element.find(selector);
+    if (found.length > 0) {
+      contentElement = found.first();
+      break;
+    }
+  }
+
   // Get the text content
-  let text = $element.text().trim();
+  let text = contentElement.text().trim();
+  
+  // Skip if this looks like JavaScript or system content
+  if (text.includes('window.__') || 
+      text.includes('requestAnimationFrame') || 
+      text.includes('__oai_') ||
+      text.includes('ChatGPTLog inSign up') ||
+      text.includes('You said:') ||
+      text.includes('ChatGPT said:') ||
+      text.length > 5000) {
+    return {
+      text: '',
+      formatting: {
+        isMarkdown: false,
+        hasCodeBlocks: false,
+        hasLinks: false,
+        hasImages: false,
+      }
+    };
+  }
   
   // Clean up the text
   text = text.replace(/\s+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
   
   // Check for code blocks
-  const hasCodeBlocks = $element.find('code, pre').length > 0;
-  const hasLinks = $element.find('a').length > 0;
-  const hasImages = $element.find('img').length > 0;
+  const hasCodeBlocks = contentElement.find('code, pre').length > 0;
+  const hasLinks = contentElement.find('a').length > 0;
+  const hasImages = contentElement.find('img').length > 0;
   
   // Extract code artifacts
   const artifacts: Array<{
@@ -271,7 +498,7 @@ function extractMessageContent($element: any, $: cheerio.Root) {
   }> = [];
   
   if (hasCodeBlocks) {
-    $element.find('code').each((_, codeElement) => {
+    contentElement.find('code').each((_, codeElement) => {
       const $code = $(codeElement);
       const codeContent = $code.text().trim();
       

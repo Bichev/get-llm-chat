@@ -227,15 +227,39 @@ function Counter() {
   private static extractMessages($: cheerio.Root, selectors: typeof PARSING_SELECTORS.chatgpt): Message[] {
     const messages: Message[] = [];
     
-    // Find all message elements
-    const messageElements = $(selectors.messages);
+    // Updated selectors based on actual ChatGPT HTML structure
+    const messageSelectors = [
+      'article[data-testid*="conversation-turn"]', // Primary selector for ChatGPT messages
+      '[data-message-author-role]',  // Fallback selector for messages with role
+      'div[data-testid*="conversation-turn"]', // Alternative test ID based
+      '.group.w-full',  // ChatGPT message containers (older structure)
+      '.group .flex.flex-col', // Message content containers (older structure)
+    ];
     
-    messageElements.each((index, element) => {
+    // Try each selector until we find messages
+    let messageElements: any = $('');
+    for (const selector of messageSelectors) {
+      messageElements = $(selector);
+      if (messageElements.length > 0) {
+        console.log(`Found ${messageElements.length} messages with selector: ${selector}`);
+        break;
+      }
+    }
+    
+    messageElements.each((index: number, element: any) => {
       try {
         const $element = $(element);
-        const role = this.extractMessageRole($element);
-        const content = this.extractMessageContent($element, $);
-        const timestamp = this.extractTimestamp($element);
+        
+        // For ChatGPT's article-based structure, look for the actual message div inside
+        let $messageDiv = $element.find('[data-message-author-role]');
+        if ($messageDiv.length === 0) {
+          // If we already selected the message div directly
+          $messageDiv = $element;
+        }
+        
+        const role = this.extractMessageRole($messageDiv);
+        const content = this.extractMessageContent($messageDiv, $);
+        const timestamp = this.extractTimestamp($messageDiv);
 
         if (content.text.trim()) {
           const message: Message = {
@@ -268,14 +292,16 @@ function Counter() {
     if (roleAttr === 'assistant') return 'assistant';
     if (roleAttr === 'system') return 'system';
 
-    // Fallback: check for other indicators
-    if ($element.hasClass('user-message') || $element.find('.user-message').length > 0) {
-      return 'user';
-    }
+    // Fallback logic - look for role in parent or child elements
+    const $parent = $element.parent();
+    const parentRole = $parent.attr('data-message-author-role');
+    if (parentRole === 'user') return 'user';
+    if (parentRole === 'assistant') return 'assistant';
     
-    if ($element.hasClass('assistant-message') || $element.find('.assistant-message').length > 0) {
-      return 'assistant';
-    }
+    const $child = $element.find('[data-message-author-role]').first();
+    const childRole = $child.attr('data-message-author-role');
+    if (childRole === 'user') return 'user';
+    if (childRole === 'assistant') return 'assistant';
 
     // Default to assistant if unclear
     return 'assistant';
@@ -285,8 +311,9 @@ function Counter() {
    * Extracts the content from a message element
    */
   private static extractMessageContent($element: any, $: cheerio.Root): MessageContent {
-    // Find content container
+    // Look for the actual content in ChatGPT's structure
     const contentSelectors = [
+      '.whitespace-pre-wrap',  // Primary content selector for ChatGPT
       '.markdown',
       '.prose',
       '.message-content',
@@ -303,7 +330,23 @@ function Counter() {
     }
 
     // Extract text content
-    const text = this.cleanTextContent(contentElement.text());
+    let text = this.cleanTextContent(contentElement.text());
+
+    // Skip if this looks like system content
+    if (text.includes('You said:') || 
+        text.includes('ChatGPT said:') ||
+        text.includes('window.__') ||
+        text.length > 5000) {
+      return {
+        text: '',
+        formatting: {
+          isMarkdown: false,
+          hasCodeBlocks: false,
+          hasLinks: false,
+          hasImages: false,
+        }
+      };
+    }
 
     // Check for formatting elements
     const hasCodeBlocks = contentElement.find('pre, code, .code-block').length > 0;

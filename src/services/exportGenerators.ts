@@ -1,6 +1,7 @@
 import type { Conversation, ExportFormat, ExportOptions } from '@/types';
 import { generateSafeFilename } from '@/utils/validators';
 import { format } from 'date-fns';
+import { jsPDF } from 'jspdf';
 
 /**
  * Base interface for export generators
@@ -211,98 +212,125 @@ export class TextGenerator implements ExportGenerator {
 }
 
 /**
- * PDF export generator (placeholder - will be implemented with proper PDF library)
+ * PDF export generator - now generates actual PDFs
  */
 export class PDFGenerator implements ExportGenerator {
   generate(conversation: Conversation, options: ExportOptions = {}): string {
-    // For now, return HTML that can be converted to PDF
     const { includeMetadata = true, includeTimestamps = true } = options;
     
-    let html = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>${conversation.title}</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-        h1 { color: #1f2937; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
-        .metadata { background: #f9fafb; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-        .message { margin-bottom: 20px; padding: 15px; border-radius: 8px; }
-        .user { background: #eff6ff; border-left: 4px solid #3b82f6; }
-        .assistant { background: #f0f9ff; border-left: 4px solid #10b981; }
-        .role { font-weight: 600; margin-bottom: 8px; }
-        .timestamp { color: #6b7280; font-size: 0.875rem; }
-        .content { line-height: 1.6; }
-        pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow-x: auto; }
-        code { font-family: 'SF Mono', Monaco, monospace; }
-    </style>
-</head>
-<body>
-    <h1>${conversation.title}</h1>
-`;
+    // Create a new PDF document
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 20;
+    const maxWidth = pageWidth - 2 * margin;
+    let yPosition = margin;
     
+    // Helper function to add text with word wrapping
+    const addWrappedText = (text: string, fontSize: number = 12, isBold: boolean = false) => {
+      doc.setFontSize(fontSize);
+      doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+      
+      const lines = doc.splitTextToSize(text, maxWidth);
+      
+      for (const line of lines) {
+        if (yPosition > pageHeight - margin) {
+          doc.addPage();
+          yPosition = margin;
+        }
+        
+        doc.text(line, margin, yPosition);
+        yPosition += fontSize * 0.5; // Line height
+      }
+      
+      yPosition += 5; // Extra spacing after text block
+    };
+    
+    // Title
+    addWrappedText(conversation.title, 18, true);
+    yPosition += 10;
+    
+    // Metadata
     if (includeMetadata) {
-      html += `
-    <div class="metadata">
-        <strong>Platform:</strong> ${conversation.platform.toUpperCase()}<br>
-        <strong>Extracted:</strong> ${format(conversation.metadata.extractedAt, 'PPpp')}<br>
-        <strong>Messages:</strong> ${conversation.metadata.messageCount}
-        ${conversation.metadata.url ? `<br><strong>Original URL:</strong> ${conversation.metadata.url}` : ''}
-    </div>
-`;
+      addWrappedText(`Platform: ${conversation.platform.toUpperCase()}`, 12, true);
+      addWrappedText(`Extracted: ${format(conversation.metadata.extractedAt, 'PPpp')}`, 12);
+      addWrappedText(`Messages: ${conversation.metadata.messageCount}`, 12);
+      
+      if (conversation.metadata.url) {
+        addWrappedText(`Original URL: ${conversation.metadata.url}`, 12);
+      }
+      
+      yPosition += 10;
+      
+      // Add a line separator
+      doc.setDrawColor(200, 200, 200);
+      doc.line(margin, yPosition, pageWidth - margin, yPosition);
+      yPosition += 15;
     }
     
+    // Messages
     for (const message of conversation.messages) {
-      const roleClass = message.role === 'user' ? 'user' : 'assistant';
       const roleName = message.role === 'user' ? 'You' : 'Assistant';
+      let roleText = roleName;
       
-      html += `
-    <div class="message ${roleClass}">
-        <div class="role">
-            ${roleName}
-            ${includeTimestamps ? `<span class="timestamp">${format(message.timestamp, 'PPp')}</span>` : ''}
-        </div>
-        <div class="content">${this.formatContentForHTML(message.content.text)}</div>
-`;
+      if (includeTimestamps) {
+        roleText += ` - ${format(message.timestamp, 'PPp')}`;
+      }
       
-      // Add code artifacts
+      // Role header
+      addWrappedText(roleText, 14, true);
+      
+      // Message content
+      addWrappedText(message.content.text, 11);
+      
+      // Code artifacts
       if (message.content.artifacts) {
         for (const artifact of message.content.artifacts) {
           if (artifact.type === 'code') {
-            html += `
-        <pre><code>${this.escapeHTML(artifact.content)}</code></pre>
-`;
+            yPosition += 5;
+            addWrappedText(`[Code${artifact.language ? ` - ${artifact.language}` : ''}]:`, 10, true);
+            
+            // Code content with monospace font
+            doc.setFont('courier', 'normal');
+            doc.setFontSize(9);
+            const codeLines = doc.splitTextToSize(artifact.content, maxWidth);
+            
+            for (const line of codeLines) {
+              if (yPosition > pageHeight - margin) {
+                doc.addPage();
+                yPosition = margin;
+              }
+              
+              doc.text(line, margin, yPosition);
+              yPosition += 12;
+            }
+            
+            yPosition += 5;
           }
         }
       }
       
-      html += '    </div>\n';
+      // Add separator between messages
+      if (yPosition > pageHeight - 30) {
+        doc.addPage();
+        yPosition = margin;
+      } else {
+        doc.setDrawColor(240, 240, 240);
+        doc.line(margin, yPosition, pageWidth - margin, yPosition);
+        yPosition += 15;
+      }
     }
     
-    html += '</body></html>';
-    return html;
-  }
-  
-  private formatContentForHTML(text: string): string {
-    return this.escapeHTML(text).replace(/\n/g, '<br>');
-  }
-  
-  private escapeHTML(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    // Return the PDF as a base64 string
+    return doc.output('datauristring');
   }
   
   getContentType(): string {
-    return 'text/html'; // Will be 'application/pdf' when proper PDF generation is implemented
+    return 'application/pdf';
   }
   
   getFileExtension(): string {
-    return 'html'; // Will be 'pdf' when proper PDF generation is implemented
+    return 'pdf';
   }
 }
 
@@ -330,7 +358,25 @@ export function createExportGenerator(format: ExportFormat): ExportGenerator {
  * Utility function to trigger file download
  */
 export function downloadFile(content: string, filename: string, contentType: string): void {
-  const blob = new Blob([content], { type: contentType });
+  let blob: Blob;
+  
+  // Handle PDF data URI (from jsPDF)
+  if (contentType === 'application/pdf' && content.startsWith('data:application/pdf;filename=generated.pdf;base64,')) {
+    // Extract base64 content from data URI
+    const base64Content = content.split(',')[1];
+    const binaryString = atob(base64Content);
+    const bytes = new Uint8Array(binaryString.length);
+    
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    blob = new Blob([bytes], { type: contentType });
+  } else {
+    // Handle regular text content
+    blob = new Blob([content], { type: contentType });
+  }
+  
   const url = URL.createObjectURL(blob);
   
   const link = document.createElement('a');
